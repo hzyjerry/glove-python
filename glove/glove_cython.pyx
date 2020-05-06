@@ -88,7 +88,7 @@ def fit_vectors(double[:, ::1] wordvec,
 
                 learning_rate = initial_learning_rate / sqrt(wordvec_sum_gradients[word_a, i])
                 gradient = loss * wordvec[word_b, i]
-                wordvec[word_a, i] = (wordvec[word_a, i] - learning_rate 
+                wordvec[word_a, i] = (wordvec[word_a, i] - learning_rate
                                       * gradient)
                 wordvec_sum_gradients[word_a, i] += gradient ** 2
 

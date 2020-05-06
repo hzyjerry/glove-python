@@ -10,3 +10,9 @@ Makefile~
 *.npy
 *.bz2
 *#*
+*.c
+*.cpp
+*.sketch
+*.pmi
+.ipynb_checkpoints
+*.csv

@@ -7,7 +7,8 @@ try:
 except ImportError:
     import pickle
 
-from .corpus_cython import construct_cooccurrence_matrix
+from .corpus_cython import construct_cooccurrence_matrix, construct_pmi_matrix
+# from .corpus_cython import construct_cooccurrence_matrix
 
 
 class Corpus(object):
@@ -25,6 +26,7 @@ class Corpus(object):
         self.dictionary = {}
         self.dictionary_supplied = False
         self.matrix = None
+        self.pmi = None
 
         if dictionary is not None:
             self._check_dict(dictionary)
@@ -57,25 +59,29 @@ class Corpus(object):
                                If False, a KeyError is raised.
         """
 
-        self.matrix = construct_cooccurrence_matrix(corpus,
-                                                    self.dictionary,
-                                                    int(self.dictionary_supplied),
-                                                    int(window),
-                                                    int(ignore_missing))
+        self.matrix, self.pmi = construct_pmi_matrix(corpus,
+                                        self.dictionary,
+                                        int(self.dictionary_supplied),
+                                        int(window),
+                                        int(ignore_missing),
+                                        positive=False)
 
-    def save(self, filename):
 
-        with open(filename, 'wb') as savefile:
-            pickle.dump((self.dictionary, self.matrix),
-                        savefile,
-                        protocol=pickle.HIGHEST_PROTOCOL)
+    def save(self, model_name, pmi_name=None):
+        import pdb; pdb.set_trace()
+        with open(model_name, 'wb') as savefile: pickle.dump((self.dictionary, self.matrix), savefile)
+        if pmi_name:
+            with open(pmi_name, 'wb') as savefile: pickle.dump((self.pmi), savefile)
 
     @classmethod
-    def load(cls, filename):
+    def load(cls, model_name, pmi_name=None):
 
         instance = cls()
 
-        with open(filename, 'rb') as savefile:
+        with open(model_name, 'rb') as savefile:
             instance.dictionary, instance.matrix = pickle.load(savefile)
+        if pmi_name:
+            with open(pmi_name, 'rb') as savefile:
+                instance.pmi = pickle.load(savefile)
 
         return instance

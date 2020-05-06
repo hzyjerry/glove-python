@@ -10,9 +10,12 @@ except ImportError:
     import pickle
 
 import numpy as np
+import scipy
+import time
 import scipy.sparse as sp
 import numbers
-
+from .utils import *
+from wpca import PCA, WPCA, EMPCA
 from .glove_cython import fit_vectors, transform_paragraph
 
 
@@ -130,6 +133,72 @@ class Glove(object):
                         self.max_loss,
                         int(no_threads))
 
+            if not np.isfinite(self.word_vectors).all():
+                raise Exception('Non-finite values in word vectors. '
+                                'Try reducing the learning rate or the '
+                                'max_loss parameter.')
+
+    def sketch(self, matrix, epochs=5, dim=80, verbose=False):
+        """
+        Estimate the word embeddings.
+
+        Parameters:
+        - scipy.sparse.coo_matrix matrix: coocurrence matrix
+        - int epochs: number of training epochs
+        - int dim: sketch dimension
+        - bool verbose: print progress messages if True
+        """
+
+        shape = matrix.shape
+
+        if (len(shape) != 2 or
+            shape[0] != shape[1]):
+            raise Exception('Coocurrence matrix must be square')
+
+        if not sp.isspmatrix_coo(matrix):
+            raise Exception('Coocurrence matrix must be in the COO format')
+
+        use_svd = True
+
+        for epoch in range(epochs):
+            shape = matrix.shape
+            if use_svd:
+                # sketch matrix
+                gamma = np.random.random((shape[1], dim))
+                # range sketch
+                Y = matrix.dot(gamma) # (N, dim)
+                Q, R = np.linalg.qr(Y)  # (N, dim), A ~ Q @ Q.T @ A
+                C = matrix.dot(Q).T # (dim, N)
+
+                # Truncated SVD
+                Uc, sc, Vhc = scipy.linalg.svd(C, full_matrices=False)
+
+                U_matrix = Q.dot(Uc)
+                #sketch_matrix = matrix.dot(sketch)
+                #sketch_matrix[np.isclose(sketch_matrix, 0)] = -1e8
+                #U, s, Vh = scipy.linalg.svd(sketch_matrix, full_matrices=False)
+
+                # Square root singular value
+                self.word_vectors = U_matrix.dot(np.sqrt(np.diag(sc)))
+
+                # # Normalized version
+                # norms = np.sqrt(np.sum(np.square(U_matrix), axis=1, keepdims=True))
+                # U_matrix /= np.maximum(norms, 1e-7)
+                # self.word_vectors = U_matrix
+
+            else:
+                log_matrix = sp.coo_matrix(matrix)
+                log_matrix.data = np.log(log_matrix.data)
+
+                sketch = np.random.random((shape[1], dim))
+                compressed = log_matrix.dot(sketch)
+                compressed[np.isclose(compressed, 0)] = -1e8
+                weights = matrix.dot(sketch)
+                weights += np.random.random(weights.shape) * 0.01
+                t_start = time.time()
+                Y = WPCA(n_components=dim).fit_reconstruct(compressed, weights=weights)
+                print(f"PCA time: {time.time() - t_start:03f}")
+                self.word_vectors = Y
             if not np.isfinite(self.word_vectors).all():
                 raise Exception('Non-finite values in word vectors. '
                                 'Try reducing the learning rate or the '

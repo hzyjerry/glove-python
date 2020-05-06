@@ -23,13 +23,17 @@ def read_wikipedia_corpus(filename):
 
     # We don't want to do a dictionary construction pass.
     corpus = gensim.corpora.WikiCorpus(filename, dictionary={})
-
+    max_idx = 100
+    idx = 0
     for text in corpus.get_texts():
+        # if idx > max_idx:
+        #     break
+        # idx += 1
         yield text
 
 
 if __name__ == '__main__':
-    
+
     # Set up command line parameters.
     parser = argparse.ArgumentParser(description='Fit a GloVe model.')
 
@@ -47,6 +51,8 @@ if __name__ == '__main__':
                         help=('Train the GloVe model with this number of epochs.'
                               'If not supplied, '
                               'We\'ll attempt to load a trained model'))
+    parser.add_argument('--sketch', '-s', action='store', default=0,
+                        help=('Sketch the GloVe model'))
     parser.add_argument('--parallelism', '-p', action='store',
                         default=1,
                         help=('Number of parallel threads to use for training'))
@@ -68,8 +74,8 @@ if __name__ == '__main__':
 
         corpus_model = Corpus()
         corpus_model.fit(get_data(args.create), window=10)
-        corpus_model.save('corpus.model')
-        
+        corpus_model.save('corpus.model', 'corpus.pmi')
+
         print('Dict size: %s' % len(corpus_model.dictionary))
         print('Collocations: %s' % corpus_model.matrix.nnz)
 
@@ -83,6 +89,7 @@ if __name__ == '__main__':
 
             print('Dict size: %s' % len(corpus_model.dictionary))
             print('Collocations: %s' % corpus_model.matrix.nnz)
+            # import pdb; pdb.set_trace()
 
         print('Training the GloVe model')
 
@@ -92,6 +99,28 @@ if __name__ == '__main__':
         glove.add_dictionary(corpus_model.dictionary)
 
         glove.save('glove.model')
+
+    if args.sketch:
+        # Train the GloVe model with sketching method and save it to disk.
+
+        if not args.create:
+            # Try to load a corpus from disk.
+            print('Reading corpus statistics')
+            corpus_model = Corpus.load('corpus.model', 'corpus.pmi')
+
+            print('Dict size: %s' % len(corpus_model.dictionary))
+            print('Collocations: %s' % corpus_model.matrix.nnz)
+            # import pdb; pdb.set_trace()
+
+        print('Sketching the GloVe model')
+
+        glove = Glove(no_components=100, learning_rate=0.05)
+        # glove.sketch(corpus_model.matrix, epochs=int(args.sketch), verbose=True)
+        glove.sketch(corpus_model.pmi, epochs=int(args.sketch), verbose=True)
+        glove.add_dictionary(corpus_model.dictionary)
+
+        glove.save('glove.sketch')
+
 
     if args.query:
         # Finally, query the model for most similar words.

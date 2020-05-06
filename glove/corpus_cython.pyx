@@ -4,11 +4,12 @@
 
 import numpy as np
 import scipy.sparse as sp
-
+from libc.math cimport log
 from libc.stdlib cimport malloc, free
 
 from cython.operator cimport dereference as deref
 from libcpp.vector cimport vector
+from libcpp cimport bool
 
 
 cdef inline int int_min(int a, int b) nogil: return a if a <= b else b
@@ -32,7 +33,7 @@ cdef int binary_search(int* vec, int size, int first, int last, int x) nogil:
 
     if (first == size):
         return first
-    elif vec[first] > x:
+    elif vec[first] >= x:
         return first
     else:
         return first + 1
@@ -61,7 +62,7 @@ cdef SparseRowMatrix* new_matrix():
     return mat
 
 
-cdef void free_matrix(SparseRowMatrix* mat) nogil:
+cdef void free_matrix(SparseRowMatrix* mat):
     """
     Deallocate the data of a matrix
     """
@@ -79,7 +80,7 @@ cdef void free_matrix(SparseRowMatrix* mat) nogil:
     free(mat)
 
 
-cdef void increment_matrix(SparseRowMatrix* mat, int row, int col, float increment) nogil:
+cdef void increment_matrix(SparseRowMatrix* mat, int row, int col, float increment):
     """
     Increment the (row, col) entry of mat by increment.
     """
@@ -106,7 +107,12 @@ cdef void increment_matrix(SparseRowMatrix* mat, int row, int col, float increme
                             0, row_indices.size(), col)
 
     # Element to be added at the end
+    cdef int row_size = row_indices.size()
+    cdef int last_col
     if idx == row_indices.size():
+        # if row_indices.size() > 0:
+        #     last_col = deref(row_indices)[row_size - 1]
+        #     # print("col", col, "last col", last_col)
         row_indices.insert(row_indices.begin() + idx, col)
         row_data.insert(row_data.begin() + idx, increment)
         return
@@ -120,6 +126,14 @@ cdef void increment_matrix(SparseRowMatrix* mat, int row, int col, float increme
         # Element to be inserted
         row_indices.insert(row_indices.begin() + idx, col)
         row_data.insert(row_data.begin() + idx, increment)
+
+cdef void increment_vector(vector[float]* vec, int idx, float increment):
+    """
+    Increment idx entry of vector.
+    """
+    while idx >= deref(vec).size():
+        vec.push_back(0)
+    deref(vec)[idx] = deref(vec)[idx] + increment
 
 
 cdef int matrix_nnz(SparseRowMatrix* mat) nogil:
@@ -150,10 +164,10 @@ cdef matrix_to_coo(SparseRowMatrix* mat, int shape):
     # Create the constituent numpy arrays.
     row_np = np.empty(no_collocations, dtype=np.int32)
     col_np = np.empty(no_collocations, dtype=np.int32)
-    data_np = np.empty(no_collocations, dtype=np.float64)
+    data_np = np.empty(no_collocations, dtype=np.float32)
     cdef int[:] row_view = row_np
     cdef int[:] col_view = col_np
-    cdef double[:] data_view = data_np
+    cdef float[:] data_view = data_np
 
     j = 0
 
@@ -170,7 +184,7 @@ cdef matrix_to_coo(SparseRowMatrix* mat, int shape):
     return sp.coo_matrix((data_np, (row_np, col_np)),
                          shape=(shape,
                                 shape),
-                         dtype=np.float64)
+                         dtype=np.float32)
 
 
 cdef int words_to_ids(list words, vector[int]& word_ids,
@@ -283,3 +297,127 @@ def construct_cooccurrence_matrix(corpus, dictionary, int supplied,
     free_matrix(matrix)
 
     return mat
+
+
+
+
+def construct_pmi_matrix(corpus, dictionary, int supplied,
+                         int window_size, int ignore_missing, bool positive):
+    """
+    Construct the word-id dictionary and PMMI matrix for
+    a given corpus, using a given window size.
+
+    Returns the dictionary and a scipy.sparse COO cooccurrence matrix.
+    """
+
+    print("start")
+    # Declare the cooccurrence map
+    cdef SparseRowMatrix* pmi = new_matrix()
+    cdef SparseRowMatrix* matrix = new_matrix()
+
+    # String processing variables.
+    cdef list words
+    cdef int i, j, outer_word, inner_word
+    cdef int wordslen, window_stop, error
+    cdef vector[float] row_sums, col_sums
+    cdef vector[int] word_ids
+    cdef float total = 0.
+
+    # Pre-allocate some reasonable size
+    # for the word ids vector.
+    word_ids.reserve(1000)
+    row_sums.reserve(1000)
+    col_sums.reserve(1000)
+
+    # Iterate over the corpus.
+    for words in corpus:
+
+        # Convert words to a numeric vector.
+        error = words_to_ids(words, word_ids, dictionary,
+                             supplied, ignore_missing)
+        if error == -1:
+            raise KeyError('Word missing from dictionary')
+
+        wordslen = word_ids.size()
+
+        # Record co-occurrences in a moving window.
+        for i in range(wordslen):
+            outer_word = word_ids[i]
+
+            # Continue if we have an OOD token.
+            if outer_word == -1:
+                continue
+
+            window_stop = int_min(i + window_size + 1, wordslen)
+
+            for j in range(i, window_stop):
+                inner_word = word_ids[j]
+
+                if inner_word == -1:
+                    continue
+
+                # Do nothing if the words are the same.
+                if inner_word == outer_word:
+                    continue
+
+                increment_vector(&row_sums, inner_word, 1.)
+                increment_vector(&col_sums, outer_word, 1.)
+                total += 1.
+
+                increment_matrix(matrix,
+                                 inner_word,
+                                 outer_word,
+                                 1.0)
+                increment_matrix(matrix,
+                                 outer_word,
+                                 inner_word,
+                                 1.0)
+                increment_matrix(pmi,
+                                 inner_word,
+                                 outer_word,
+                                 1.0)
+                increment_matrix(pmi,
+                                 inner_word,
+                                 outer_word,
+                                 1.0)
+
+    # Iterate over matrix.
+    cdef int num_rows = pmi.indices.size()
+    print("num rows", num_rows)
+
+    cdef int row_size
+    cdef int col, row
+    cdef float val
+    cdef vector[float]* row_data
+    cdef vector[int]* row_indices
+    cdef eps = 0.00000001
+
+    for row in range(num_rows):
+        row_indices = &(deref(pmi.indices)[row])
+        row_data = &(deref(pmi.data)[row])
+
+        row_size = row_indices.size()
+        # print("row", row, "row size", row_size)
+        # print("row", row)
+        # if row_size > 0:
+        #     print("last row idx", row_indices[-1])
+        for i in range(row_size):
+            # print("row", row, "i", i)
+            col = deref(row_indices)[i]
+            # PMI
+            val = deref(row_data)[i]
+            deref(row_data)[i] = log((val / total) / (row_sums[row] / total) / (col_sums[col] / total) + eps)
+            # print("row", row, "col", col, "val", val, "total", total, "log_val", log(val))
+            # print("row col val", deref(row_data)[col])
+
+            # Only keep positive
+            if positive and deref(row_data)[i]:
+                deref(row_data)[i] = 0.
+
+    # Create the matrix.
+    mat = matrix_to_coo(matrix, len(dictionary))
+    pmi_out = matrix_to_coo(pmi, len(dictionary))
+    free_matrix(matrix)
+    free_matrix(pmi)
+
+    return mat, pmi_out
